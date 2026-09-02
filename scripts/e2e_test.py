@@ -12,7 +12,7 @@ import requests
 sys.stdout.reconfigure(encoding='utf-8')
 SECRET = "8a1317a7468aa3ad86e997d08f3f31cb"
 ASSISTANT = "65940acff94777010aa6b796"
-ROOT = r"D:\软件\AI编辑器\VS Code\项目-编程\AI_System\01_PROJECTS\GML-API"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # 项目根目录（本脚本的上一级）
 
 def sign():
     ms = str(int(time.time()*1000)); d=[int(c) for c in ms]
