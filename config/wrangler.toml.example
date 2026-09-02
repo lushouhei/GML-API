@@ -1,0 +1,22 @@
+# 用途：Cloudflare Worker 的部署配置模板
+# 使用：复制到项目根目录并改名为 wrangler.toml，然后填写下面两个【必填】项
+#       命令：cp config/wrangler.toml.example wrangler.toml
+
+name = "glm-2api"                   # Worker 名字，会变成 glm-2api.xxx.workers.dev
+main = "src/index.ts"               # 入口文件，别改
+compatibility_date = "2024-05-12"
+
+[vars]
+# 智谱网页版签名密钥。这是从网页 JS 挖出来的固定值，全网通用，保持默认即可
+SIGN_SECRET = "8a1317a7468aa3ad86e997d08f3f31cb"
+
+# 【必填 1】管理接口保护密钥。保护 /admin 接口不被陌生人调用
+# 生成方法：在 PowerShell 运行 -> [guid]::NewGuid().ToString("N")
+# 安全提醒：本项目已打补丁，此项留空会导致管理接口 401 拒绝服务（原版是直接裸奔）
+ADMIN_KEY = "把这里换成上面生成的随机字符串"
+
+[[kv_namespaces]]
+binding = "GLM_TOKENS"              # 代码里引用的名字，别改
+# 【必填 2】KV 存储的 id。先运行 npx wrangler kv namespace create GLM_TOKENS
+# 命令会输出一串 id，把它粘贴到下面的引号里
+id = ""

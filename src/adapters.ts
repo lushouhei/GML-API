@@ -187,7 +187,9 @@ export function convertGLMStreamToClaude(glmStream: ReadableStream): ReadableStr
 
       const sendMessageStop = (stopReason: string) => {
         if (streamClosed) return;
-        streamClosed = true;
+        // 注意：streamClosed 必须在两个结束事件发出【之后】才置位。
+        // 原代码先置 true，导致 safeEnqueue 的 if(!streamClosed) 把
+        // message_delta / message_stop 全部吞掉，客户端永远等不到回合结束信号。
         safeEnqueue(encoder.encode(`event: message_delta\ndata: ${JSON.stringify({
           type: "message_delta",
           delta: { stop_reason: stopReason, stop_sequence: null },
@@ -196,6 +198,7 @@ export function convertGLMStreamToClaude(glmStream: ReadableStream): ReadableStr
         safeEnqueue(encoder.encode(`event: message_stop\ndata: ${JSON.stringify({
           type: "message_stop",
         })}\n\n`));
+        streamClosed = true;   // 结束事件已发出，此时才封流
         controller.close();
       };
 

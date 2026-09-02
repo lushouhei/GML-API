@@ -1,0 +1,29 @@
+# ===== 敏感信息：绝对不能进 Git =====
+# 智谱 refresh_token
+config/token.txt
+# 自动生成的密钥汇总（API Key / ADMIN_KEY）
+config/secrets.txt
+# Cloudflare API Token
+config/cf_token.txt
+# 你的 Worker 地址
+config/worker_url.txt
+# 含 KV id 与管理密钥，只提交 config/wrangler.toml.example
+wrangler.toml
+# wrangler 本地开发密钥
+.dev.vars
+
+# ===== 调试产物：可能含真实请求体与本机路径 =====
+logs/*
+!logs/.gitkeep
+
+# ===== 依赖与构建产物 =====
+node_modules/
+__pycache__/
+*.pyc
+.wrangler/
+dist/
+*.log
+
+# ===== 备份文件 =====
+*.bak
+*.bak-*

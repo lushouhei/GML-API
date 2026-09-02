@@ -1,0 +1,5 @@
+# 用途：告诉本地中转脚本你的 Cloudflare Worker 地址
+# 使用：复制本文件为同目录下的 worker_url.txt，把下面一行换成你自己的地址
+#       地址在 wrangler deploy 成功时终端会打印
+
+https://<your-worker>.workers.dev

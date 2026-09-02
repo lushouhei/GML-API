@@ -255,8 +255,8 @@ async function handleTokenCheck(request: Request, env: Env): Promise<Response> {
 
 async function handleAdminAPIKey(request: Request, env: Env): Promise<Response> {
   const adminKey = request.headers.get("X-Admin-Key") || "";
-  if (env.ADMIN_KEY && adminKey !== env.ADMIN_KEY) {
-    return errorResponse("Unauthorized: invalid admin key", 401);
+  if (!env.ADMIN_KEY || adminKey !== env.ADMIN_KEY) {
+    return errorResponse("Unauthorized: 管理密钥无效或服务端未配置 ADMIN_KEY", 401);
   }
 
   if (request.method === "POST") {
@@ -288,8 +288,8 @@ async function handleAdminAPIKey(request: Request, env: Env): Promise<Response> 
 
 async function handleAdminToken(request: Request, env: Env): Promise<Response> {
   const adminKey = request.headers.get("X-Admin-Key") || "";
-  if (env.ADMIN_KEY && adminKey !== env.ADMIN_KEY) {
-    return errorResponse("Unauthorized: invalid admin key", 401);
+  if (!env.ADMIN_KEY || adminKey !== env.ADMIN_KEY) {
+    return errorResponse("Unauthorized: 管理密钥无效或服务端未配置 ADMIN_KEY", 401);
   }
 
   if (request.method === "POST") {
@@ -319,8 +319,8 @@ async function handleAdminToken(request: Request, env: Env): Promise<Response> {
 
 async function handleAdminTokenCheck(request: Request, env: Env): Promise<Response> {
   const adminKey = request.headers.get("X-Admin-Key") || "";
-  if (env.ADMIN_KEY && adminKey !== env.ADMIN_KEY) {
-    return errorResponse("Unauthorized: invalid admin key", 401);
+  if (!env.ADMIN_KEY || adminKey !== env.ADMIN_KEY) {
+    return errorResponse("Unauthorized: 管理密钥无效或服务端未配置 ADMIN_KEY", 401);
   }
 
   const body = (await request.json()) as any;
@@ -341,7 +341,17 @@ export default {
     if (env.SIGN_SECRET) setSignSecret(env.SIGN_SECRET);
 
     const url = new URL(request.url);
-    const path = url.pathname;
+    let path = url.pathname;
+
+    // ===== z.ai 兼容层 =====
+    // ZCode / Claude Code 按 z.ai 的地址形状请求，这里把前缀剥掉后复用现有路由。
+    // 例：/api/anthropic/v1/messages  ->  /v1/messages
+    //     /api/paas/v4/chat/completions -> /v1/chat/completions
+    if (path.startsWith("/api/anthropic")) {
+      path = path.slice("/api/anthropic".length) || "/";
+    } else if (path.startsWith("/api/paas/v4")) {
+      path = "/v1" + path.slice("/api/paas/v4".length);
+    }
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
@@ -360,6 +370,12 @@ export default {
         });
       } else if (path === "/v1/chat/completions" && request.method === "POST") {
         response = await handleChatCompletions(request, env);
+      } else if (path === "/v1/messages/count_tokens" && request.method === "POST") {
+        // Claude Code / ZCode 会先调这个估算上下文长度。
+        // 智谱网页版不提供 token 计数接口，这里按字符数粗估（中文约 1.5 字/token）。
+        const b: any = await request.json().catch(() => ({}));
+        const raw = JSON.stringify(b.messages || []) + JSON.stringify(b.system || "");
+        response = jsonResponse({ input_tokens: Math.max(1, Math.ceil(raw.length / 2.5)) });
       } else if (path === "/v1/messages" && request.method === "POST") {
         response = await handleClaudeMessages(request, env);
       } else if (path === "/v1beta/models" && request.method === "GET") {

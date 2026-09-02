@@ -59,14 +59,35 @@ function getHeaders() {
 
 // ==================== Tool Calling Helpers ====================
 
+/**
+ * 把 JSON Schema 压成一行人类可读的参数说明。
+ *
+ * 为什么必须压：ZCode 这类编程 agent 一次会带 50+ 个工具，原样 JSON.stringify(schema, null, 2)
+ * 能到 10 万字符。智谱网页版是给人聊天用的，单条输入吃不下，结果要么被截断、要么模型淹没在
+ * schema 里完全没看到"你可以调用工具"这件事，表现就是模型自称"我没有读取文件的能力"。
+ * 压缩后 50+ 工具约 8K 字符，模型才能真正看见工具清单。
+ */
+function compactSchema(params: any): string {
+  if (!params || !isObject(params.properties)) return "none";
+  const required = new Set<string>(isArray(params.required) ? params.required : []);
+  const fields = Object.entries(params.properties).map(([key, spec]: [string, any]) => {
+    const type = spec?.type || (spec?.enum ? "enum" : "any");
+    // 描述截断到 60 字，够模型判断用途，又不至于撑爆长度
+    const desc = String(spec?.description || "").replace(/\s+/g, " ").slice(0, 60);
+    const mark = required.has(key) ? "*" : "";   // * 表示必填
+    return `${key}${mark}:${type}${desc ? `(${desc})` : ""}`;
+  });
+  return fields.join(", ") || "none";
+}
+
 function injectToolsPrompt(messages: any[], tools: any[]): any[] {
   if (!tools || tools.length === 0) return messages;
   const toolsDesc = tools.map((tool: any) => {
     const fn = tool.function || tool;
-    return `### ${fn.name}
-Description: ${fn.description || ""}
-Parameters: ${JSON.stringify(fn.parameters || {}, null, 2)}`;
-  }).join("\n\n");
+    // 工具描述只取首句/前 150 字，长篇用法说明对"判断该不该调用"没有帮助
+    const desc = String(fn.description || "").replace(/\s+/g, " ").slice(0, 150);
+    return `- ${fn.name}: ${desc}\n  args: ${compactSchema(fn.parameters)}`;
+  }).join("\n");
   const prompt = `You are an assistant with access to tools. When you need to use a tool, you MUST output ONLY a single JSON object with NO markdown, NO explanations, and NO extra text.
 
 STRICT RULES:
@@ -86,14 +107,25 @@ Assistant: {"tool_calls":[{"name":"get_weather","arguments":{"location":"Beijing
 
 User: Hello
 Assistant: Hello! How can I help you today?`;
+  // 把工具说明挂到【最后一条 user 消息】上，而不是塞进开头的 system。
+  //
+  // 原因：messagesPrepare 在多轮对话时会把整段历史拼成一条超长文本（<|user|>/<|assistant|> 分隔），
+  // 放在最前面的 system 指令离当前问题隔着上万字符，模型完全无视工具清单 ——
+  // 实测单轮能正确触发 Read，同样的工具集换成 5 条历史消息就 100% 不触发，
+  // 模型还会编造"工具调用次数已达上限"来搪塞。挂到末尾后指令紧邻当前问题，注意力才够。
   const newMessages = [...messages];
-  const systemIdx = newMessages.findIndex((m: any) => m.role === "system");
-  if (systemIdx >= 0) {
-    const original = newMessages[systemIdx].content || "";
-    newMessages[systemIdx] = { ...newMessages[systemIdx], content: original + "\n\n" + prompt };
-  } else {
-    newMessages.unshift({ role: "system", content: prompt });
+  for (let i = newMessages.length - 1; i >= 0; i--) {
+    const m: any = newMessages[i];
+    if (m.role !== "user") continue;
+    if (isArray(m.content)) {
+      newMessages[i] = { ...m, content: [...m.content, { type: "text", text: "\n\n" + prompt }] };
+    } else {
+      newMessages[i] = { ...m, content: `${m.content || ""}\n\n${prompt}` };
+    }
+    return newMessages;
   }
+  // 兜底：没有任何 user 消息时，单独追加一条
+  newMessages.push({ role: "user", content: prompt });
   return newMessages;
 }
 
@@ -856,6 +888,41 @@ async function receiveStream(model: string, readableStream: ReadableStream, tool
   });
 }
 
+/** 取出一个 part 里所有 text 类型内容拼成的字符串 */
+function extractPartText(part: any): string {
+  if (!part || !isArray(part.content)) return "";
+  return part.content
+    .filter((c: any) => c && c.type === "text")
+    .map((c: any) => c.text || "")
+    .join("");
+}
+
+/**
+ * 合并同一 logic_id 的流式 part。
+ *
+ * 智谱网页版流式对同一个 part 发的是【增量片段】而非累积全量（实测：'西湖'→'位于'→'浙江省'…），
+ * 只在收尾时会补发一次完整全文。原代码直接 cachedParts[index] = part 覆盖，
+ * 于是 fullText 只剩最新的一两个字，再被 fullText.substring(sentContent.length) 一切，
+ * 输出就成了被啃掉开头的碎片 —— 表现为正文乱码，以及工具调用 JSON 破损后解析失败、
+ * 泄漏成正文（例如 {"olls"Read","arguments":{"file}]}uments":…）。
+ */
+function mergeStreamPart(oldPart: any, newPart: any): any {
+  const oldText = extractPartText(oldPart);
+  const newText = extractPartText(newPart);
+  if (!oldText) return newPart;
+  // 收尾补发的完整全文：已包含旧内容，直接采用，避免重复
+  if (newText.length >= oldText.length && newText.startsWith(oldText)) return newPart;
+  // 常态的增量片段：把已累积的文本接到前面
+  const merged: any = { ...newPart, content: isArray(newPart.content) ? [...newPart.content] : [] };
+  const at = merged.content.findIndex((c: any) => c && c.type === "text");
+  if (at !== -1) {
+    merged.content[at] = { ...merged.content[at], text: oldText + (merged.content[at].text || "") };
+  } else {
+    merged.content.unshift({ type: "text", text: oldText });
+  }
+  return merged;
+}
+
 function createTransStream(model: string, readableStream: ReadableStream, endCallback?: (convId: string) => void, tools?: any[]): ReadableStream {
   const created = unixTimestamp();
   const encoder = new TextEncoder();
@@ -884,7 +951,9 @@ function createTransStream(model: string, readableStream: ReadableStream, endCal
             if (result.parts) {
               result.parts.forEach((part: any) => {
                 const index = cachedParts.findIndex((p) => p.logic_id === part.logic_id);
-                if (index !== -1) cachedParts[index] = part;
+                // 必须累积而不是替换：智谱流式对同一 logic_id 发的是增量片段
+                // （实测 17 次增量 / 1 次全量：'西湖'→'位于'→'浙江省'→'杭州市'→'，'）
+                if (index !== -1) cachedParts[index] = mergeStreamPart(cachedParts[index], part);
                 else cachedParts.push(part);
               });
             }
@@ -954,38 +1023,23 @@ function createTransStream(model: string, readableStream: ReadableStream, endCal
               // 智能缓冲：检测是否可能是纯工具调用 JSON，避免先发送部分 JSON 文本
               if (!isToolCallMode && tools && tools.length > 0) {
                 const trimmed = fullContent.trim();
-                if (!mightBeToolCall) {
-                  // 如果内容以 { 开头，可能是工具调用，进入缓冲模式
-                  if (trimmed.startsWith("{")) {
-                    mightBeToolCall = true;
-                    pendingContent += chunk;
-                  } else {
-                    // 不以 { 开头，直接发送
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-                      id: result.conversation_id, model: MODEL_NAME, object: "chat.completion.chunk",
-                      choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
-                      created,
-                    })}\n\n`));
-                  }
-                } else {
-                  // 已在缓冲模式，继续累积
+                // 只要整段输出以 { 开头，就一路缓冲到流结束再统一判断。
+                //
+                // 旧逻辑在累积满 20 字符时就抢先下结论，但判断用的是全量 fullContent、
+                // 发送的却只是局部 pendingContent，两边记账不一致；当 "tool_calls"
+                // 字样还没流完时会误判为普通文本、把 mightBeToolCall 打回 false，
+                // 下一片又重新进入缓冲并清空 pendingContent，于是丢字符，
+                // 最终向客户端吐出类似 {"olls"Bash","arguments":{"command 的破损 JSON。
+                if (mightBeToolCall || trimmed.startsWith("{")) {
+                  mightBeToolCall = true;
                   pendingContent += chunk;
-                  // 当累积足够内容后，判断是否是工具调用
-                  if (trimmed.length >= 20) {
-                    if (trimmed.includes('"tool_calls"') || trimmed.includes("'tool_calls'") || trimmed.includes("tool_calls")) {
-                      isToolCallMode = true;
-                      pendingContent = "";
-                    } else {
-                      // 不是工具调用，一次性发送缓冲内容
-                      mightBeToolCall = false;
-                      controller.enqueue(encoder.encode(`data: ${JSON.stringify({
-                        id: result.conversation_id, model: MODEL_NAME, object: "chat.completion.chunk",
-                        choices: [{ index: 0, delta: { content: pendingContent }, finish_reason: null }],
-                        created,
-                      })}\n\n`));
-                      pendingContent = "";
-                    }
-                  }
+                } else {
+                  // 不以 { 开头，肯定不是纯工具调用，正常逐片下发
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                    id: result.conversation_id, model: MODEL_NAME, object: "chat.completion.chunk",
+                    choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
+                    created,
+                  })}\n\n`));
                 }
               } else if (!isToolCallMode) {
                 controller.enqueue(encoder.encode(`data: ${JSON.stringify({
@@ -1003,6 +1057,15 @@ function createTransStream(model: string, readableStream: ReadableStream, endCal
               if (parsed.tool_calls) {
                 finishReason = "tool_calls";
                 delta = { tool_calls: parsed.tool_calls };
+              } else if (pendingContent) {
+                // 缓冲了一段以 { 开头的内容，但最终解析不出工具调用，
+                // 说明它就是普通文本（比如模型在讲 JSON），此处补发，避免内容丢失
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+                  id: result.conversation_id, model: MODEL_NAME, object: "chat.completion.chunk",
+                  choices: [{ index: 0, delta: { content: pendingContent }, finish_reason: null }],
+                  created,
+                })}\n\n`));
+                pendingContent = "";
               }
             }
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({

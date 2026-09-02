@@ -1,0 +1,11 @@
+# 用途：存放你的智谱清言 refresh_token，一行一个（可放多个账号轮询）
+# 使用：把本文件复制为同目录下的 token.txt，然后填入真实值
+#
+# 怎么拿到 refresh_token（3 步，不用写代码）：
+#   1. Chrome 打开 https://chatglm.cn 并登录你的会员账号
+#   2. 按 F12 -> 顶部选 Application(应用) -> 左侧 Storage -> Cookies -> https://chatglm.cn
+#   3. 找到名为 chatglm_refresh_token 的那一行，双击 Value 全选复制，粘贴到下面
+#
+# 注意：这个值等于你的账号钥匙，泄露=别人能白嫖你的会员，千万别发群里/传 GitHub
+
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.在这里粘贴你的真实token
